@@ -1,5 +1,6 @@
 {
   "dependencies": {
-    "cohost": "^0.0.3"
+    "cohost": "^0.0.3",
+    "form-data": "^4.0.0"
   }
 }
