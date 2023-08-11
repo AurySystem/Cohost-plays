@@ -2,32 +2,50 @@ const cohost = require("cohost");
 const _fetch = require("node-fetch");
 const FormData = require('form-data')
 const fs = require("fs/promises");
+const fss = require("fs")
 const controls = require("./controls");
 
 let api_url="https://cohost.org/api/v1";
 
-const readline = require('readline').createInterface({
-    input: process.stdin,
-    output: process.stdout
-});
-const entry = function(prompt){new Promise((a)=>{readline.question(prompt, a)})}
 
 let name;
 let pass;
 
-readline.question(`Enter Username: `, en => {
-  console.log(`Confirmed`);
-  name = en;
+try{
+  let a = fss.readFileSync("./fastlogin.txt",{encoding:"utf8"});
+  name = a.split(" ")[0];
+  pass = a.split(" ")[1];
+}catch(e){
   
-  readline.question(`Enter Password: `, en => {
-    console.log(`Await validation`);
-    pass = en;
-    readline.close();
-    core();
+}
+
+let lastpost;
+
+try{
+  lastpost = fss.readFileSync("./lastpost.txt",{encoding:"utf8"});
+}catch(e){
+  console.log("no last post using first in feed")
+}
+
+if(name === undefined || pass === undefined){
+    
+  const readline = require('readline').createInterface({
+      input: process.stdin,
+      output: process.stdout
   });
+  readline.question(`Enter Username: `, en => {
+    console.log(`Confirmed`);
+    name = en;
+    
+    readline.question(`Enter Password: `, en => {
+      console.log(`Await validation`);
+      pass = en;
+      readline.close();
+      core();
+    });
 
-});
-
+  });
+} else core();
 
 async function core() {
   // Create User and authenticate
@@ -46,51 +64,81 @@ async function core() {
   if(project == null) throw("Handle not found");
   
   let swapToProject = await _fetch(api_url+"/trpc/projects.switchProject?batch=1", {method:"POST", body: JSON.stringify({0: {'projectId': project.id}}), headers:{'User-Agent': 'cohost.js','Content-Type': 'application/json', 'cookie': user.sessionCookie}, credentials:'include'});
-  // console.log(swapToProject)
-  // console.log(await swapToProject.text())
-
-  let [prevPost] = await project.getPosts();
+  
+  try{
+    lastpost = fss.readFileSync("./lastpost.txt",{encoding:"utf8"});
+  }catch(e){
+    console.log("no last post using first in feed")
+  }
+  
+  if(lastpost === undefined){
+   let [prevPost] = project.getPosts();
+   lastpost = prevPost.id;
+  }
   // Get lastest post of Project
   // console.log(prevPost);
-
-  let notifsRaw = await _fetch(api_url+"/notifications/list?limit=40", {method:"GET", headers:{'User-Agent': 'cohost.js', 'Content-Type': 'application/json', 'cookie': user.sessionCookie}, credentials:'include'});
-  let notifs = await notifsRaw.json();
+  let projectpostencoding = encodeURI(JSON.stringify({0: {'handle': project.handle,'postId':parseInt(lastpost)}}));
+    
+  let postRaw = await _fetch(api_url+`/trpc/posts.singlePost?batch=1&input=${projectpostencoding}`, {method:"GET", headers:{'User-Agent': 'cohost.js', 'Content-Type': 'application/json', 'cookie': user.sessionCookie}, credentials:'include'});
+  let posty = await postRaw.json();
+  
+  
+  // let notifsRaw = await _fetch(api_url+"/notifications/list?limit=40", {method:"GET", headers:{'User-Agent': 'cohost.js', 'Content-Type': 'application/json', 'cookie': user.sessionCookie}, credentials:'include'});
+  // let notifs = await notifsRaw.json();
   // console.log(notifs);
-
-  let commentids = [];
+  
+  let commentToplevel = posty?.[0]?.result?.data?.comments;
+  
   let uniquePages = [];
   let comments = [];
-
-  for(let comment of notifs.notifications){
-    // console.log(comment)
-    if(comment.type == "comment"){
-      if(comment.toPostId == prevPost.id && comment.inReplyTo == null && !uniquePages.includes(comment.fromProjectId)){
-        commentids.push(comment.commentId);
-        uniquePages.push(comment.fromProjectId);
+  function commentTree(spot){
+    if(spot.children?.length != undefined && spot.children?.length !=0){
+      for(var key of spot.children){
+        var comment = key.comment;
+        if(!comment.body.charAt(0)!="?" && !uniquePages.includes(key.poster.projectId)){
+          comments.push(comment.body);
+          uniquePages.push(key.poster.projectId);
+          if(comment.children?.length != undefined && comment.children?.length !=0){
+            commentTree(comment);
+          }
+        }
       }
     }
   }
-  // console.log(commentids)
-  // console.log(notifs.comments)
-  for(let comment in notifs.comments){
-    if(commentids.includes(comment)){
-      comments.push(notifs.comments[comment]?.comment)
+  
+  if(commentToplevel != undefined){
+    for(id in commentToplevel){
+      for(var key of commentToplevel[id]){
+        var comment = key.comment;
+        if(!comment.body.charAt(0)!="?" && !uniquePages.includes(key.poster.projectId)){
+          comments.push(comment.body);
+          uniquePages.push(key.poster.projectId);
+          if(comment.children?.length != undefined && comment.children?.length !=0){
+            commentTree(comment);
+          }
+        }
+      }
     }
   }
-  // console.log(comments)
-
+  
   let votes = new Map();
 
   for (let comm of comments){
     let vote = [];
-    for(let key of controls.ControlAliases){
-      if (comm.body.match(new RegExp('\\b'+key+'\\b',"g")) !== null){
+    for(let key of controls.ControlMap.keys()){
+      if (comm.match(new RegExp('\\b'+key+'\\b',"g")) !== null){
         if(!vote.includes(controls.ControlMap.get(key))){
-          vote.push(controls.ControlMap.get(key));
+          vote[controls.Buttons.indexOf(controls.ControlMap.get(key))] = controls.ControlMap.get(key);
         }
       }
     }
-    let out = vote.join(" ")
+    let mid = [];
+    for (i = 0; i < vote.length; i++) {
+        if (vote[i] !== undefined) {
+          mid.push(vote[i]);
+        }
+    }
+    let out = mid.join(" ")
     if(votes.has(out)){
       votes.set(out, votes.get(out)+1)
     }else{
@@ -106,6 +154,7 @@ async function core() {
       highestVal = value;
     }
   }
+  if(highestKey === "nil") highestKey = "";
 
 
   fs.writeFile('./test.txt', highestKey).catch(er => {
@@ -132,7 +181,9 @@ async function core() {
     postState: 0,
     headline: highestKey+" ===>",
     adultContent: false,
-    blocks: [{"type":"attachment","attachment":{"attachmentId":"00000000-0000-0000-0000-000000000000","altText":"a frame of a video game"}},{"type":"markdown","markdown":{"content":"Vote on the next frame inputs in the comments."}}],
+    blocks: [{"type":"attachment","attachment":{"attachmentId":"00000000-0000-0000-0000-000000000000","altText":"a frame of a video game"}},
+      {"type":"markdown","markdown":{"content":"Vote on the next frame inputs in the comments below, using any of the provided keys with a space between them. Note, if you're discussing things instead of voting put a '?' at the start of your comment to make it ignored for voting. One voter per project/profile"}},
+      {"type":"markdown","markdown":{"content":"What text converts to which buttons can be found here <a>https://cohost.org/CohostPlaysFramePerfectly/post/1479578-inputs-and-the-contr</a>"}}],
     cws: [],
     tags: ["videogames","bot","The Cohost Bot feed","botchosting", "Cohost Plays"]
   };
@@ -179,6 +230,12 @@ async function core() {
   });
  
   fs.unlink("./screenshot.png").catch(er => {
+    if (er) {
+      console.error(er);
+    }
+  });
+  
+  fs.writeFile('./lastpost.txt', postId+"").catch(er => {
     if (er) {
       console.error(er);
     }
